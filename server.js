@@ -1,10 +1,47 @@
 const express = require('express');
-const http = require('http');
+const fs = require('fs');
+const https = require('https');
 const { Server } = require('socket.io');
 const path = require('path');
+require('dotenv').config();
 
 const app = express();
-const server = http.createServer(app);
+const sslKeyPath = process.env.SSL_KEY_PATH;
+const sslCertPath = process.env.SSL_CERT_PATH;
+const sslCaPath = process.env.SSL_CA_PATH;
+const sslPassphrase = process.env.SSL_PASSPHRASE;
+
+if (!sslKeyPath || !sslCertPath) {
+  console.error('Missing SSL_KEY_PATH or SSL_CERT_PATH in .env');
+  process.exit(1);
+}
+
+const resolvedKeyPath = path.resolve(__dirname, sslKeyPath);
+const resolvedCertPath = path.resolve(__dirname, sslCertPath);
+
+if (!fs.existsSync(resolvedKeyPath)) {
+  console.error(`SSL key file not found: ${resolvedKeyPath}`);
+  process.exit(1);
+}
+
+if (!fs.existsSync(resolvedCertPath)) {
+  console.error(`SSL cert file not found: ${resolvedCertPath}`);
+  process.exit(1);
+}
+
+const httpsOptions = {
+  key: fs.readFileSync(resolvedKeyPath),
+  cert: fs.readFileSync(resolvedCertPath)
+};
+
+if (sslCaPath) {
+  httpsOptions.ca = fs.readFileSync(path.resolve(__dirname, sslCaPath));
+}
+if (sslPassphrase) {
+  httpsOptions.passphrase = sslPassphrase;
+}
+
+const server = https.createServer(httpsOptions, app);
 const io = new Server(server, {
   cors: { origin: '*' }
 });
@@ -90,5 +127,5 @@ io.on('connection', (socket) => {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+  console.log(`Server running on https://localhost:${PORT}`);
 });

@@ -30,11 +30,15 @@ class WebRTCManager {
 
   async initLocalAudio() {
     try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('mediaDevices.getUserMedia is unavailable (HTTPS required or unsupported browser).');
+      }
       this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch (err) {
       console.error('Microphone access denied:', err);
       // Create a silent stream so connections still work
-      const ctx = new AudioContext();
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      const ctx = new AudioCtx();
       const dest = ctx.createMediaStreamDestination();
       this.localStream = dest.stream;
     }
@@ -52,6 +56,9 @@ class WebRTCManager {
 
   async startScreenShare() {
     try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+        throw new Error('mediaDevices.getDisplayMedia is unavailable (HTTPS required or unsupported browser).');
+      }
       this.screenStream = await navigator.mediaDevices.getDisplayMedia({
         video: {
           cursor: 'always',
@@ -182,6 +189,8 @@ class WebRTCManager {
 
   _createPeerConnection(peerId) {
     const pc = new RTCPeerConnection({ iceServers: this.iceServers });
+    pc._makingOffer = false;
+    pc._pendingOffer = false;
 
     pc.onicecandidate = (e) => {
       if (e.candidate) {
@@ -217,27 +226,32 @@ class WebRTCManager {
       }
     };
 
-    pc.onnegotiationneeded = async () => {
-      // Avoid re-entrant negotiation
-      if (pc._negotiating) return;
-      pc._negotiating = true;
-      try {
-        await this._createAndSendOffer(peerId, pc);
-      } finally {
-        pc._negotiating = false;
-      }
-    };
-
     return pc;
   }
 
   async _createAndSendOffer(peerId, pc) {
+    if (pc.signalingState !== 'stable') {
+      pc._pendingOffer = true;
+      return;
+    }
+    if (pc._makingOffer) {
+      pc._pendingOffer = true;
+      return;
+    }
+
     try {
+      pc._makingOffer = true;
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       this.socket.emit('offer', { to: peerId, offer: pc.localDescription });
     } catch (err) {
       console.error('Error creating offer:', err);
+    } finally {
+      pc._makingOffer = false;
+      if (pc._pendingOffer && pc.signalingState === 'stable') {
+        pc._pendingOffer = false;
+        await this._createAndSendOffer(peerId, pc);
+      }
     }
   }
 
@@ -309,6 +323,10 @@ class WebRTCManager {
       if (peerData) {
         try {
           await peerData.pc.setRemoteDescription(new RTCSessionDescription(answer));
+          if (peerData.pc._pendingOffer && peerData.pc.signalingState === 'stable') {
+            peerData.pc._pendingOffer = false;
+            await this._createAndSendOffer(from, peerData.pc);
+          }
         } catch (err) {
           console.error('Error setting remote description:', err);
         }
